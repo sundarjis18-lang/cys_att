@@ -852,6 +852,39 @@
       color: #c084fc;
     }
 
+    .badge-pct {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--tx-sub);
+    }
+
+    .badge-pct.bm-cur {
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.12);
+    }
+
+    .badge-pct.bm-pre {
+      color: #cbd5e1;
+      background: rgba(148, 163, 184, 0.12);
+    }
+
+    .badge-pct.bm-good {
+      color: #34d399;
+      background: var(--present-green-bg);
+      font-weight: 700;
+    }
+
+    .badge-pct.bm-warn {
+      color: #f87171;
+      background: var(--full-red-bg);
+      font-weight: 700;
+    }
+
     /* SUBMIT BUTTON */
     #btn-submit {
       position: fixed;
@@ -1167,6 +1200,7 @@
               <option value="2">Week II</option>
               <option value="3">Week III</option>
               <option value="4">Week IV</option>
+              <option value="5">Week V</option>
             </select>
           </div>
           <div>
@@ -1314,10 +1348,13 @@
           <table>
             <thead>
               <tr>
-                <th style="width:36px">#</th>
-                <th style="width:90px">Roll No.</th>
+                <th style="width:32px">#</th>
+                <th style="width:85px">Roll No.</th>
                 <th>Name</th>
-                <th style="text-align:right">Mark</th>
+                <th style="text-align:center">Mark</th>
+                <th style="text-align:center" title="Current Month Attendance">Cur Mon</th>
+                <th style="text-align:center" title="Previous Month Attendance">Pre Mon</th>
+                <th style="text-align:center" title="Total Cumulative Attendance">Total %</th>
               </tr>
             </thead>
             <tbody id="prev-body"></tbody>
@@ -1664,7 +1701,7 @@
         const d = await r.json();
         if (d.error) throw new Error(d.error);
 
-        if (d.weeks) buildWeekOpts(d.weeks);
+        buildWeekOpts(Math.max(d.weeks || 5, 5));
         if (d.students && d.students.length) {
           S.students = d.students;
           renderRosterList();
@@ -1672,15 +1709,17 @@
         }
         setStatus('ready', 'Connected');
       } catch (e) {
+        buildWeekOpts(5);
         setStatus('warn', 'Setup Needed');
       }
     }
 
-    function buildWeekOpts(n) {
+    function buildWeekOpts(n = 5) {
       const R = ['I', 'II', 'III', 'IV', 'V'];
-      const cur = selWeek.value;
+      const cur = selWeek.value || '1';
+      const count = Math.max(n || 5, 5);
       selWeek.innerHTML = '';
-      for (let i = 1; i <= n; i++) {
+      for (let i = 1; i <= count; i++) {
         const o = document.createElement('option');
         o.value = i;
         o.textContent = 'Week ' + (R[i - 1] || i);
@@ -1877,11 +1916,15 @@
           btnCls = 'st-an'; btnTxt = 'AN (/a)';
         }
 
+        const totBadge = stu.total ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(16,185,129,0.15);color:#34d399;font-weight:700">${stu.total}</span>` : '';
         item.innerHTML = `
           <div class="roster-info">
             <span style="font-size:11px;color:var(--tx-muted);width:20px">${stu.sno || '•'}</span>
             <div>
-              <div class="roster-regno">${stu.regno}</div>
+              <div class="roster-regno" style="display:flex;align-items:center;gap:6px">
+                <span>${stu.regno}</span>
+                ${totBadge}
+              </div>
               <div class="roster-name" title="${stu.name}">${stu.name}</div>
             </div>
           </div>
@@ -1946,13 +1989,22 @@
       prevBody.innerHTML = marked.map((m, i) => {
         let markBadge = '';
         if (m.mark === 'a') {
-          markBadge = '<span class="badge-mark bm-a">Full Absent (a)</span>';
+          markBadge = '<span class="badge-mark bm-a">Full (a)</span>';
         } else if (m.mark === 'a/') {
-          markBadge = '<span class="badge-mark bm-fn">FN Absent (a/)</span>';
+          markBadge = '<span class="badge-mark bm-fn">FN (a/)</span>';
         } else if (m.mark === '/a') {
-          markBadge = '<span class="badge-mark bm-an">AN Absent (/a)</span>';
+          markBadge = '<span class="badge-mark bm-an">AN (/a)</span>';
         } else {
           markBadge = '<span class="badge-mark bm-p">Present (/)</span>';
+        }
+
+        const cur = m.curMon ? `<span class="badge-pct bm-cur">${m.curMon}</span>` : '—';
+        const pre = m.preMon ? `<span class="badge-pct bm-pre">${m.preMon}</span>` : '—';
+        let tot = '—';
+        if (m.total) {
+          const num = parseFloat(String(m.total).replace('%', ''));
+          const cls = (!isNaN(num) && num < 75) ? 'badge-pct bm-warn' : 'badge-pct bm-good';
+          tot = `<span class="${cls}">${m.total}</span>`;
         }
 
         return `
@@ -1960,7 +2012,10 @@
             <td style="color:var(--tx-muted)">${i + 1}</td>
             <td class="td-mark">${m.regno}</td>
             <td style="font-weight:600">${m.name || '—'}</td>
-            <td style="text-align:right">${markBadge}</td>
+            <td style="text-align:center">${markBadge}</td>
+            <td style="text-align:center">${cur}</td>
+            <td style="text-align:center">${pre}</td>
+            <td style="text-align:center">${tot}</td>
           </tr>
         `;
       }).join('');
