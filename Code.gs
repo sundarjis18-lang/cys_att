@@ -114,10 +114,8 @@ function getSpreadsheet(sheetId) {
 }
 
 function weeksInMonth(year, month) {
-  var days = new Date(year, month, 0).getDate(), count = 0;
-  for (var d = 1; d <= days; d++)
-    if (new Date(year, month-1, d).getDay() === 1) count++;
-  return count || 4;
+  // Default to 5 weeks for all months so attendance register layout has Week I through Week V
+  return 5;
 }
 
 function academicYear(abbr) {
@@ -128,6 +126,96 @@ function academicYear(abbr) {
 
 function colFor(weekNum, dayOrder) {
   return 4 + (weekNum - 1) * 6 + (dayOrder - 1);
+}
+
+function colName(n) {
+  var s = '';
+  while (n > 0) {
+    var m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+// ── ATTENDANCE PERCENTAGE FORMULAS (CUR MON, PRE MON, TOTAL) ─────────────────
+function applySummaryFormulas(sheet, ss, abbr) {
+  var nWeeks = weeksInMonth(new Date().getFullYear(), MONTH_NUMS[abbr] || 11);
+  var attCols = 6 * nWeeks;
+  var totalCols = 3 + attCols + 3;
+  var curCol = 4 + attCols;
+  var preCol = curCol + 1;
+  var totCol = curCol + 2;
+
+  var firstAttCol = colName(4);           // 'D'
+  var lastAttCol  = colName(3 + attCols); // 'AG'
+  var curColLetter = colName(curCol);     // 'AH'
+  var preColLetter = colName(preCol);     // 'AI'
+  var totColLetter = colName(totCol);     // 'AJ'
+
+  var PREV_MAP = {
+    JAN: 'DEC', FEB: 'JAN', MAR: 'FEB', APR: 'MAR',
+    MAY: 'APR', JUN: 'MAY', JUL: 'JUN', AUG: 'JUL',
+    SEP: 'AUG', OCT: 'SEP', NOV: 'OCT', DEC: 'NOV'
+  };
+  var prevAbbr = PREV_MAP[(abbr || '').toUpperCase()];
+  var hasPrevSheet = prevAbbr && ss.getSheetByName(prevAbbr) !== null;
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 7) return;
+
+  var data = sheet.getRange(1, 1, lastRow, 3).getValues();
+  var curRange = sheet.getRange(1, curCol, lastRow, 3);
+  var formulas = curRange.getFormulas();
+  var values = curRange.getValues();
+  var updated = false;
+
+  for (var r = 0; r < lastRow; r++) {
+    var regno = String(data[r][1]).trim();
+    if (!/^\d{8}$/.test(regno)) continue;
+
+    var rowNum = r + 1;
+    var attRange = firstAttCol + rowNum + ':' + lastAttCol + rowNum;
+
+    // 1. CUR MON Formula:
+    // Full day present (/) = 1.0, Half day absent (a/ or /a) = 0.5, Full day absent (a) = 0
+    var curFormula = '=IF((COUNTIF(' + attRange + ',"/")+COUNTIF(' + attRange + ',"a")+COUNTIF(' + attRange + ',"a/")+COUNTIF(' + attRange + ',"/a"))=0,"",(COUNTIF(' + attRange + ',"/")+0.5*COUNTIF(' + attRange + ',"a/")+0.5*COUNTIF(' + attRange + ',"/a"))/(COUNTIF(' + attRange + ',"/")+COUNTIF(' + attRange + ',"a")+COUNTIF(' + attRange + ',"a/")+COUNTIF(' + attRange + ',"/a")))';
+    if (formulas[r][0] !== curFormula) {
+      formulas[r][0] = curFormula;
+      updated = true;
+    }
+
+    // 2. PRE MON: Link from previous month's TOTAL column if sheet exists, otherwise keep manual value
+    if (hasPrevSheet) {
+      var prevFormula = '=IFERROR(VLOOKUP(B' + rowNum + ",'" + prevAbbr + "'!B:" + totColLetter + ',' + (totCol - 2 + 1) + ',FALSE),"")';
+      if (!formulas[r][1] && (values[r][1] === '' || values[r][1] === null || typeof values[r][1] === 'undefined')) {
+        formulas[r][1] = prevFormula;
+        updated = true;
+      }
+    }
+
+    // 3. TOTAL Formula:
+    // Cumulative average between CUR MON and PRE MON (or whichever is populated)
+    var totFormula = '=IF(AND(' + curColLetter + rowNum + '="",' + preColLetter + rowNum + '=""),"",IF(' + preColLetter + rowNum + '="",' + curColLetter + rowNum + ',IF(' + curColLetter + rowNum + '="",' + preColLetter + rowNum + ',AVERAGE(' + curColLetter + rowNum + ',' + preColLetter + rowNum + '))))';
+    if (formulas[r][2] !== totFormula) {
+      formulas[r][2] = totFormula;
+      updated = true;
+    }
+  }
+
+  if (updated) {
+    curRange.setFormulas(formulas);
+  }
+
+  // Format student rows as 0.0% and center aligned, with bold total
+  for (var r = 0; r < lastRow; r++) {
+    var regno = String(data[r][1]).trim();
+    if (/^\d{8}$/.test(regno)) {
+      var rowNum = r + 1;
+      sheet.getRange(rowNum, curCol, 1, 3).setNumberFormat('0.0%').setHorizontalAlignment('center');
+      sheet.getRange(rowNum, totCol).setFontWeight('bold');
+    }
+  }
 }
 
 function jsonOut(data) {
@@ -182,9 +270,100 @@ function applyColumnWidths(sheet, attCols) {
   for (var c = 4; c <= 3 + attCols; c++) {
     sheet.setColumnWidth(c, 20);  // Days 1-6
   }
-  sheet.setColumnWidth(4 + attCols, 38); // CUR MON
-  sheet.setColumnWidth(5 + attCols, 38); // PRE MON
-  sheet.setColumnWidth(6 + attCols, 38); // TOTAL
+  sheet.setColumnWidth(4 + attCols, 55); // CUR MON
+  sheet.setColumnWidth(5 + attCols, 55); // PRE MON
+  sheet.setColumnWidth(6 + attCols, 55); // TOTAL
+}
+
+// Upgrades an existing sheet (e.g. JUL) that was created with only 4 weeks to full 5 weeks
+function upgradeTo5Weeks(sheet, ss, abbr) {
+  var totalCols = 36;
+  var attCols = 30;
+
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 6) return;
+
+  var maxCols = sheet.getMaxColumns();
+  var val28 = maxCols >= 28 ? String(sheet.getRange(5, 28).getValue() || '').trim() : '';
+
+  // If column 28 is already 'V WEEK', just ensure total columns, widths & formulas
+  if (val28 === 'V WEEK') {
+    if (sheet.getMaxColumns() < totalCols) {
+      sheet.insertColumnsAfter(sheet.getMaxColumns(), totalCols - sheet.getMaxColumns());
+    }
+    applyColumnWidths(sheet, attCols);
+    applySummaryFormulas(sheet, ss, abbr);
+    return;
+  }
+
+  // Old 4-week sheet had:
+  // Cols 4..27: Weeks I-IV (Day 1-6)
+  // Col 28: CUR MON, Col 29: PRE MON, Col 30: TOTAL
+  // Insert 6 columns after Column 27 (Week 4 Day 6).
+  // This automatically pushes old columns 28..30 (CUR MON, PRE MON, TOTAL) to columns 34..36!
+  sheet.insertColumnsAfter(27, 6);
+
+  var sections = readSections(ss);
+  var CHUNK = 20;
+  var blocks = [];
+  sections.forEach(function(sec) {
+    for (var i = 0; i < sec.students.length; i += CHUNK) {
+      blocks.push({ sem: sec.sem, students: sec.students.slice(i, i + CHUNK) });
+    }
+  });
+
+  var startRow = 1;
+  blocks.forEach(function(sec) {
+    var nStu = sec.students.length;
+
+    try {
+      sheet.getRange(startRow, 1, 1, totalCols).merge()
+        .setFontWeight('bold').setFontSize(10).setHorizontalAlignment('center');
+      sheet.getRange(startRow + 1, 1, 1, totalCols).merge()
+        .setFontWeight('bold').setFontSize(10).setHorizontalAlignment('center');
+      sheet.getRange(startRow + 2, 1, 1, totalCols - 2).merge()
+        .setFontWeight('bold').setFontSize(9);
+      sheet.getRange(startRow + 2, totalCols - 1, 1, 2).merge()
+        .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('right');
+      sheet.getRange(startRow + 3, 4, 1, attCols).merge()
+        .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('center');
+    } catch(e) {}
+
+    // Row 5: V WEEK header
+    sheet.getRange(startRow + 4, 28).setValue('V WEEK');
+    sheet.getRange(startRow + 4, 28, 1, 6).merge()
+      .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('center').setVerticalAlignment('middle');
+
+    // Row 6: Day order numbers 1–6
+    for (var d = 1; d <= 6; d++) {
+      sheet.getRange(startRow + 5, 28 + (d - 1)).setValue(d)
+        .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('center');
+    }
+
+    // Student rows: center align in columns 28 to 33
+    sheet.getRange(startRow + 6, 28, nStu, 6).setHorizontalAlignment('center').setFontSize(9);
+
+    // Apply borders to table
+    var tableRange = sheet.getRange(startRow + 4, 1, 2 + nStu, totalCols);
+    tableRange.setBorder(true, true, true, true, true, true, '#000000', SpreadsheetApp.BorderStyle.SOLID);
+
+    var noteRow = startRow + 6 + nStu;
+    try {
+      sheet.getRange(noteRow, 1, 1, totalCols).merge().setFontSize(9);
+      sheet.getRange(noteRow + 1, 1, 1, Math.ceil(totalCols / 2)).merge().setFontSize(9);
+      sheet.getRange(noteRow + 1, Math.ceil(totalCols / 2) + 1, 1, Math.floor(totalCols / 4)).merge()
+        .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('center');
+      var hodCol = Math.ceil(totalCols / 2) + Math.floor(totalCols / 4) + 1;
+      var hodSpan = totalCols - hodCol + 1;
+      sheet.getRange(noteRow + 1, hodCol, 1, hodSpan).merge()
+        .setFontWeight('bold').setFontSize(9).setHorizontalAlignment('center');
+    } catch(e) {}
+
+    startRow = noteRow + 2;
+  });
+
+  applyColumnWidths(sheet, attCols);
+  applySummaryFormulas(sheet, ss, abbr);
 }
 
 function buildSheet(ss, abbr, year) {
@@ -192,10 +371,10 @@ function buildSheet(ss, abbr, year) {
   var attCols  = 6 * nWeeks;
   var totalCols = 3 + attCols + 3;
 
-  // If sheet already exists → re-apply compact column widths and return
+  // If sheet already exists → ensure 5 weeks (upgrade if only 4 weeks), apply widths & formulas
   var existing = ss.getSheetByName(abbr);
   if (existing) {
-    applyColumnWidths(existing, attCols);
+    upgradeTo5Weeks(existing, ss, abbr);
     return { sheet: existing, nWeeks: nWeeks };
   }
 
@@ -323,8 +502,9 @@ function buildSheet(ss, abbr, year) {
     startRow = noteRow + 2;
   });
 
-  // Apply compact column widths
+  // Apply compact column widths and percentage formulas
   applyColumnWidths(sheet, attCols);
+  applySummaryFormulas(sheet, ss, abbr);
 
   return { sheet: sheet, nWeeks: nWeeks };
 }
@@ -343,13 +523,19 @@ function doGet(e) {
     var nWeeks  = result.nWeeks;
 
     var data = sheet.getDataRange().getValues();
+    var curSummaryCol = 4 + (6 * nWeeks);
+    var summaryDisplay = sheet.getLastRow() >= 7 ? sheet.getRange(1, curSummaryCol, sheet.getLastRow(), 3).getDisplayValues() : [];
     var students = [];
     for (var r = 0; r < data.length; r++) {
       var sno   = String(data[r][0]).trim();
       var regno = String(data[r][1]).trim();
       var name  = String(data[r][2]).trim();
-      if (/^\d{8}$/.test(regno) && name.length > 0)
-        students.push({ row: r+1, sno: sno, regno: regno, name: name });
+      if (/^\d{8}$/.test(regno) && name.length > 0) {
+        var curM = (r < summaryDisplay.length) ? (summaryDisplay[r][0] || '') : '';
+        var preM = (r < summaryDisplay.length) ? (summaryDisplay[r][1] || '') : '';
+        var totM = (r < summaryDisplay.length) ? (summaryDisplay[r][2] || '') : '';
+        students.push({ row: r+1, sno: sno, regno: regno, name: name, curMon: curM, preMon: preM, total: totM });
+      }
     }
 
     return jsonOut({
@@ -437,6 +623,22 @@ function doPost(e) {
 
       sheet.getRange(r+1, col).setValue(mark);
       marked.push({ regno: regno, name: name, mark: mark, row: r+1 });
+    }
+
+    // Automatically calculate & update percentage formulas for CUR MON, PRE MON, and TOTAL
+    applySummaryFormulas(sheet, ss, abbr);
+    SpreadsheetApp.flush();
+
+    // Read the evaluated percentage values for all marked students to display in app preview
+    var attCols = 6 * weeksInMonth(year, MONTH_NUMS[abbr] || 11);
+    var summaryDisplay = sheet.getRange(1, 4 + attCols, sheet.getLastRow(), 3).getDisplayValues();
+    for (var m = 0; m < marked.length; m++) {
+      var rowIdx = marked[m].row - 1;
+      if (rowIdx < summaryDisplay.length) {
+        marked[m].curMon = summaryDisplay[rowIdx][0] || '';
+        marked[m].preMon = summaryDisplay[rowIdx][1] || '';
+        marked[m].total  = summaryDisplay[rowIdx][2] || '';
+      }
     }
 
     return jsonOut({
